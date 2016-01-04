@@ -8,23 +8,19 @@
 
 import Foundation
 
+// MARK: Literals
+
 private enum Keyword: String {
     case False = "false"
     case Null  = "null"
     case True  = "true"
-    
-    var utf8: String.UTF8View {
-        return rawValue.utf8
-    }
 }
 
 private struct Literal {
     static let BACKSLASH     = UInt8(ascii: "\\")
-    static let BACKSPACE     = UInt8(ascii: "\u{0008}")
     static let COLON         = UInt8(ascii: ":")
     static let COMMA         = UInt8(ascii: ",")
     static let DOUBLE_QUOTE  = UInt8(ascii: "\"")
-    static let FORMFEED      = UInt8(ascii: "\u{000c}")
     static let LEFT_BRACE    = UInt8(ascii: "{")
     static let LEFT_BRACKET  = UInt8(ascii: "[")
     static let MINUS         = UInt8(ascii: "-")
@@ -34,22 +30,17 @@ private struct Literal {
     static let RETURN        = UInt8(ascii: "\r")
     static let RIGHT_BRACE   = UInt8(ascii: "}")
     static let RIGHT_BRACKET = UInt8(ascii: "]")
-    static let SLASH         = UInt8(ascii: "/")
     static let SPACE         = UInt8(ascii: " ")
     static let TAB           = UInt8(ascii: "\t")
 
-    static let b = UInt8(ascii: "b")
     static let e = UInt8(ascii: "e")
     static let f = UInt8(ascii: "f")
     static let n = UInt8(ascii: "n")
-    static let r = UInt8(ascii: "r")
     static let t = UInt8(ascii: "t")
     static let u = UInt8(ascii: "u")
     static let E = UInt8(ascii: "E")
-    
-    static var HexLower: Range<UInt8> { return UInt8(ascii: "a")...UInt8(ascii: "f") }
-    static var HexUpper: Range<UInt8> { return UInt8(ascii: "A")...UInt8(ascii: "F") }
-    static var Digits: Range<UInt8>   { return UInt8(ascii: "0")...UInt8(ascii: "9") }
+
+    static var Digits: ClosedInterval<UInt8> { return UInt8(ascii: "0")...UInt8(ascii: "9") }
 }
 
 private let ParserMaximumDepth = 512
@@ -120,7 +111,7 @@ public struct JSONParser {
             case Literal.MINUS:
                 return try decodeNumberNegative(loc)
 
-            case Literal.Digits.startIndex:
+            case Literal.Digits.start:
                 return try decodeNumberLeadingZero(loc)
 
             case Literal.Digits:
@@ -151,13 +142,13 @@ public struct JSONParser {
 
     private mutating func decodeKeyword(keyword: Keyword, @autoclosure with json: () -> JSON) throws -> JSON {
         let start = loc
-        let end = start.advancedBy(keyword.utf8.count - 1, limit: input.endIndex)
+        let end = start.advancedBy(keyword.rawValue.utf8.count - 1, limit: input.endIndex)
 
         guard end != input.endIndex else {
             throw Error.EndOfStreamUnexpected
         }
         
-        guard input[start ... end].elementsEqual(keyword.utf8) else {
+        guard input[start ... end].elementsEqual(keyword.rawValue.utf8) else {
             throw Error.KeywordMisspelled(offset: start, text: keyword.rawValue)
         }
 
@@ -165,95 +156,90 @@ public struct JSONParser {
         return json()
     }
 
-    private var stringDecodingBuffer = [UInt8]()
-    private mutating func decodeString() throws -> JSON {
-        let start = loc
-        loc = loc.successor()
-        stringDecodingBuffer.removeAll(keepCapacity: true)
-        while loc < input.count {
+    private mutating func scanUntilEndOfString() throws -> (Range<Int>, needsEscapes: (unicode: Bool, count: Int)?) {
+        var inEscape = false
+        var offset = 0
+        var needsUnicode = false
+        var range = loc..<loc
+
+        loop: while loc != input.endIndex {
             switch input[loc] {
+            case Literal.DOUBLE_QUOTE where !inEscape:
+                range.endIndex = loc
+                break loop
             case Literal.BACKSLASH:
-                loc = loc.successor()
-                switch input[loc] {
-                case Literal.DOUBLE_QUOTE: stringDecodingBuffer.append(Literal.DOUBLE_QUOTE)
-                case Literal.BACKSLASH:    stringDecodingBuffer.append(Literal.BACKSLASH)
-                case Literal.SLASH:        stringDecodingBuffer.append(Literal.SLASH)
-                case Literal.b:            stringDecodingBuffer.append(Literal.BACKSPACE)
-                case Literal.f:            stringDecodingBuffer.append(Literal.FORMFEED)
-                case Literal.r:            stringDecodingBuffer.append(Literal.RETURN)
-                case Literal.t:            stringDecodingBuffer.append(Literal.TAB)
-                case Literal.n:            stringDecodingBuffer.append(Literal.NEWLINE)
-                case Literal.u:
-                    loc = loc.successor()
-                    let escaped = try decodeUnicodeEscape()
-                    stringDecodingBuffer.appendContentsOf(escaped)
-                    continue
-
-                default:
-                    throw Error.ControlCharacterUnrecognized(offset: loc)
-                }
-                loc = loc.successor()
-
-            case Literal.DOUBLE_QUOTE:
-                loc = loc.successor()
-                stringDecodingBuffer.append(0)
-
-                guard let string = (stringDecodingBuffer.withUnsafeBufferPointer {
-                    String.fromCString(UnsafePointer($0.baseAddress))
-                }) else {
-                    throw Error.UnicodeEscapeInvalid(offset: start)
-                }
-
-                return .String(string)
-
-            case let other:
-                stringDecodingBuffer.append(other)
-                loc = loc.successor()
+                inEscape = true
+            case Literal.u where inEscape:
+                loc = loc.advancedBy(4, limit: input.endIndex)
+                inEscape = false
+                needsUnicode = true
+                offset += 5
+            case _ where inEscape:
+                inEscape = false
+                offset += 1
+            default: break
             }
+
+            loc = loc.successor()
         }
 
-        throw Error.EndOfStreamUnexpected
-    }
-
-    private mutating func decodeUnicodeEscape() throws -> [UInt8] {
-        let start = loc
-        let end = start.advancedBy(3, limit: input.endIndex)
-
-        guard end != input.endIndex else {
+        // input[loc] should at the closing " right now
+        guard loc != input.endIndex else {
             throw Error.EndOfStreamUnexpected
         }
 
-        var codepoint: UInt16 = 0
-        for byte in input[start ... end] {
-            let nibble: UInt16
-            switch byte {
-            case Literal.Digits:
-                nibble = UInt16(byte - Literal.Digits.startIndex)
+        loc = loc.successor()
 
-            case Literal.HexLower:
-                nibble = 10 + UInt16(byte - Literal.HexLower.startIndex)
+        return (range, offset == 0 ? nil : (needsUnicode, offset))
+    }
 
-            case Literal.HexUpper:
-                nibble = 10 + UInt16(byte - Literal.HexUpper.startIndex)
+    private mutating func decodeString() throws -> JSON {
+        // skip past the opening "
+        let start = loc
+        loc = loc.successor()
 
-            default:
-                throw Error.UnicodeEscapeInvalid(offset: start)
-            }
-            codepoint = (codepoint << 4) | nibble
+        // scan until we find the closing "
+        let (range, needsEscapes) = try scanUntilEndOfString()
+
+        // Degenerate case; no escapes.
+        guard let (needsUnicode, escapeOffset) = needsEscapes else {
+            // Ideally we'd use String.fromCString(_:) but that requires a NUL terminator.
+            // And we could use String.init(bytes:encoding:), but that copies to an Array first.
+            let ptr = input.baseAddress.advancedBy(range.startIndex)
+            let string = NSString(bytes: ptr, length: range.count, encoding: NSUTF8StringEncoding) as! String
+            return .String(string)
         }
-        
-        loc = end.successor()
-        
-        // UTF16-to-UTF8, via wikipedia
-        if codepoint <= 0x007f {
-            return [UInt8(codepoint)]
-        } else if codepoint <= 0x07ff {
-            return [0b11000000 | UInt8(codepoint >> 6),
-                0b10000000 | UInt8(codepoint & 0x3f)]
+
+        // "If `repairIllFormedSequences` is `true`, the function always succeeds."
+        let (utf16Count, isAscii) = UTF16.measure(UTF8.self, input: input[range].generate(), repairIllFormedSequences: true)!
+        let codeUnitCount = utf16Count - escapeOffset
+
+        if isAscii && !needsUnicode {
+            var string = ""
+            var escapeParser = EscapeParser(start: start)
+            string.reserveCapacity(codeUnitCount)
+
+            try input[range].transcodeFrom(UTF8.self, to: UTF32.self, transform: {
+                try escapeParser.parse($0)
+            }, output: {
+                string.append(UnicodeScalar($0))
+            })
+
+            return .String(string)
         } else {
-            return [0b11100000 | UInt8(codepoint >> 12),
-                0b10000000 | UInt8((codepoint >> 6) & 0x3f),
-                0b10000000 | UInt8(codepoint & 0x3f)]
+            let buf = UnsafeMutablePointer<UTF16.CodeUnit>.alloc(codeUnitCount)
+            var ptr = buf
+            var escapeParser = EscapeParser(start: start)
+
+            try input[range].transcodeFrom(UTF8.self, to: UTF16.self, transform: {
+                try escapeParser.parse($0)
+            }, output: {
+                ptr.memory = $0
+                ptr += 1
+            })
+            
+            let string = String(utf16CodeUnitsNoCopy: buf, count: codeUnitCount, freeWhenDone: true)
+            return .String(string)
         }
     }
 
@@ -361,7 +347,7 @@ public struct JSONParser {
         }
 
         switch input[loc] {
-        case Literal.Digits.startIndex:
+        case Literal.Digits.start:
             return try decodeNumberLeadingZero(start, sign: .Negative)
 
         case Literal.Digits:
@@ -397,7 +383,7 @@ public struct JSONParser {
             let c = input[loc]
             switch c {
             case Literal.Digits:
-                value = 10 * value + Int(c - Literal.Digits.startIndex)
+                value = 10 * value + Int(c - Literal.Digits.start)
                 loc = loc.successor()
 
             case Literal.PERIOD:
@@ -437,7 +423,7 @@ public struct JSONParser {
             let c = input[loc]
             switch c {
             case Literal.Digits:
-                value += position * Double(c - Literal.Digits.startIndex)
+                value += position * Double(c - Literal.Digits.start)
                 position /= 10
                 loc = loc.successor()
 
@@ -495,7 +481,7 @@ public struct JSONParser {
             let c = input[loc]
             switch c {
             case Literal.Digits:
-                exponent = exponent * 10 + Double(c - Literal.Digits.startIndex)
+                exponent = exponent * 10 + Double(c - Literal.Digits.start)
                 loc = loc.successor()
 
             default:
@@ -517,10 +503,7 @@ public extension JSONParser {
 
     init(string: String) {
         let codePoints = string.nulTerminatedUTF8
-        let buffer = codePoints.withUnsafeBufferPointer { nulTerminatedBuffer in
-            // don't want to include the nul termination in the buffer - trim it off
-            UnsafeBufferPointer(start: nulTerminatedBuffer.baseAddress, count: nulTerminatedBuffer.count - 1)
-        }
+        let buffer = codePoints.dropLast().withUnsafeBufferPointer { $0 }
         self.init(buffer: buffer, owner: codePoints)
     }
 
@@ -533,6 +516,143 @@ extension JSONParser: JSONParserType {
         return try parser.parse()
     }
 
+}
+
+// MARK: - String parsing
+
+private extension UnicodeScalar {
+    init(surrogatePair leading: UInt16, _ trailing: UInt16) {
+        self.init()
+        let codepoints = [ leading, trailing ]
+        transcode(UTF16.self, UTF32.self, codepoints.generate(), {
+            self = UnicodeScalar($0)
+            }, stopOnError: false)
+    }
+
+    init?(controlCharacter control: UnicodeScalar) {
+        switch control {
+        case "\\", "/", "\"":
+            self = control
+        case "b": // backspace
+            self = "\u{8}"
+        case "t": // tab
+            self = "\u{9}"
+        case "n": // new line
+            self = "\u{a}"
+        case "f": // form feed
+            self = "\u{c}"
+        case "r": // carriage return
+            self = "\u{d}"
+        default:
+            return nil
+        }
+    }
+}
+
+private extension CollectionType where Generator.Element: UnsignedIntegerType {
+    // Partial reimplementation of transcode(_:_:_,_:stopOnError:).
+    // https://github.com/apple/swift/blob/master/stdlib/public/core/Unicode.swift
+    func transcodeFrom<Input: UnicodeCodecType, Output: UnicodeCodecType where Input.CodeUnit == Generator.Element>(_: Input.Type, to _: Output.Type, @noescape transform: UnicodeScalar throws -> UnicodeScalar?, output: Output.CodeUnit -> ()) rethrows {
+        var input = generate()
+        var decoder = Input()
+        repeat {
+            let scalar: UnicodeScalar
+            switch decoder.decode(&input) {
+            case let .Result(us):
+                scalar = us
+            case .EmptyInput:
+                return
+            case .Error:
+                scalar = "\u{fffd}"
+            }
+
+            if let transformed = try transform(scalar) {
+                Output.encode(transformed, output: output)
+            }
+        } while true
+    }
+}
+
+extension JSONParser {
+    private struct EscapeParser {
+        enum State {
+            case None
+            // consumed a "\", now looking for a control character
+            case BeginControl
+            // parsing a Unicode escape
+            case UnicodeEscape(UInt16, remaining: Int)
+            // got a Unicode character, but UTF-16 says we need another
+            case NeedSurrogatePair
+        }
+
+        let start: Int
+        var state = State.None
+        var priorCodepoint: UInt16?
+
+        init(start: Int) {
+            self.start = start
+        }
+
+        func hexFromScalar(scalar: UnicodeScalar) throws -> UInt16 {
+            let digits: ClosedInterval<UnicodeScalar> = "0"..."9"
+            let lower:  ClosedInterval<UnicodeScalar> = "a"..."f"
+            let upper:  ClosedInterval<UnicodeScalar> = "A"..."F"
+
+            switch scalar {
+            case digits: return UInt16(scalar.value - digits.start.value)
+            case lower:  return UInt16(scalar.value - lower.start.value) + 10
+            case upper:  return UInt16(scalar.value - upper.start.value) + 10
+            default:     throw Error.UnicodeEscapeInvalid(offset: start)
+            }
+        }
+
+        mutating func parse(scalar: UnicodeScalar) throws -> UnicodeScalar? {
+            switch (state, scalar) {
+            case (.None, "\\"), (.NeedSurrogatePair, "\\"):
+                state = .BeginControl
+            case (.None, let next):
+                return next
+
+
+            case (.BeginControl, "u"):
+                state = .UnicodeEscape(0, remaining: 4)
+                return nil
+            case (.BeginControl, _) where priorCodepoint != nil:
+                throw Error.UnicodeEscapeInvalid(offset: start)
+            case (.BeginControl, let next):
+                guard let control = UnicodeScalar(controlCharacter: next) else {
+                    throw Error.ControlCharacterUnrecognized(offset: start)
+                }
+                state = .None
+                return control
+
+
+            case let (.UnicodeEscape(current, remaining), scalar):
+                let codepoint = try (current << 4) | hexFromScalar(scalar)
+                switch (remaining - 1, priorCodepoint) {
+                case let (0, prior?):
+                    state = .None
+                    priorCodepoint = nil
+                    return UnicodeScalar(surrogatePair: prior, codepoint)
+                case (0, nil) where UTF16.isLeadSurrogate(codepoint):
+                    priorCodepoint = codepoint
+                    state = .NeedSurrogatePair
+                case (0, nil):
+                    state = .None
+                    priorCodepoint = nil
+                    return UnicodeScalar(codepoint)
+                case let (nextRemaining, _):
+                    state = .UnicodeEscape(codepoint, remaining: nextRemaining)
+                }
+
+
+            case (.NeedSurrogatePair, _):
+                throw Error.UnicodeEscapeInvalid(offset: start)
+            }
+
+            return nil
+        }
+    }
 }
 
 // MARK: - Errors
@@ -559,7 +679,11 @@ extension JSONParser {
         
         /// A `character` was not a valid start of a value around `offset`.
         case ValueInvalid(offset: Int, character: UnicodeScalar)
-        
+
+        /// Badly-formed Unicode sequence at `offset`. A string must be valid
+        /// UTF-8 with escapes.
+        case StringInvalid(offset: Int)
+
         /// Badly-formed Unicode escape sequence at `offset`. A Unicode escape
         /// uses the text "\u" followed by 4 hex digits, such as "\uF09F\uA684"
         /// to represent U+1F984, "UNICORN FACE".

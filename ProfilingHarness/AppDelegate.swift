@@ -36,7 +36,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            let objects: [CardSet]
+            print("Parsed!")
+
+            afterDelay(1.5) { [json] in
+                print("Artificially extending the lifetime of an instance of \(JSON.self)")
+            }
+
+            /*let objects: [CardSet]
             do {
                 objects = try json.arrayOf(type: CardSet.self)
             } catch {
@@ -47,7 +53,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             afterDelay(1.5) {
                 print("Artificially extending the lifetime of \(objects.count) instances of \(CardSet.self)")
-            }
+            }*/
         }
     }
 
