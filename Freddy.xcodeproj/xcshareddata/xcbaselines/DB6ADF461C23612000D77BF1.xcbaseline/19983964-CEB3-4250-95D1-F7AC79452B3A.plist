@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>classNames</key>
+	<dict>
+		<key>JSONBenchmark</key>
+		<dict>
+			<key>testJSONDeserializeCustom()</key>
+			<dict>
+				<key>com.apple.XCTPerformanceMetric_WallClockTime</key>
+				<dict>
+					<key>baselineAverage</key>
+					<real>0.80965</real>
+					<key>baselineIntegrationDisplayName</key>
+					<string>Jan 7, 2016, 12:59:38 PM</string>
+				</dict>
+			</dict>
+			<key>testJSONDeserializeToModel()</key>
+			<dict>
+				<key>com.apple.XCTPerformanceMetric_WallClockTime</key>
+				<dict>
+					<key>baselineAverage</key>
+					<real>2.3263</real>
+					<key>baselineIntegrationDisplayName</key>
+					<string>Jan 8, 2016, 12:29:39 AM</string>
+				</dict>
+			</dict>
+		</dict>
+	</dict>
+</dict>
+</plist>
