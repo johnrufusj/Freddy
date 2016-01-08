@@ -165,10 +165,60 @@ public struct JSONParser {
         return json()
     }
 
-    private var stringDecodingBuffer = [UInt8]()
+    private mutating func scanUntilEndOfString() throws -> (Range<Int>, escapeCount: Int, hasUnicodeEscapes: Bool) {
+        var inEscape = false
+        var offset = 0
+        var needsUnicode = false
+        var range = loc..<loc
+
+        loop: while loc != input.endIndex {
+            switch input[loc] {
+            case Literal.DOUBLE_QUOTE where !inEscape:
+                range.endIndex = loc
+                break loop
+            case Literal.BACKSLASH:
+                inEscape = true
+            case Literal.u where inEscape:
+                loc = loc.advancedBy(4, limit: input.endIndex)
+                offset += 4
+                needsUnicode = true
+                fallthrough
+            case _ where inEscape:
+                inEscape = false
+                offset += 1
+            default: break
+            }
+
+            loc = loc.successor()
+        }
+
+        // input[loc] should at the closing " right now
+        guard loc != input.endIndex else {
+            throw Error.EndOfStreamUnexpected
+        }
+
+        loc = loc.successor()
+
+        return (range, offset, needsUnicode)
+    }
+
     private mutating func decodeString() throws -> JSON {
+        // skip past the opening "
         let start = loc
         loc = loc.successor()
+
+        // scan until we find the closing "
+        let (range, escapeCount, hasUnicode) = try scanUntilEndOfString()
+
+        loc = start
+        return try decodeStringOld()
+    }
+
+    private var stringDecodingBuffer = [UInt8]()
+    private mutating func decodeStringOld() throws -> JSON {
+        let start = loc
+        loc = loc.successor()
+
         stringDecodingBuffer.removeAll(keepCapacity: true)
         while loc < input.count {
             switch input[loc] {
